@@ -9,6 +9,7 @@ import org.apache.commons.lang3.Validate;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.*;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,6 +22,71 @@ import java.util.Map;
 public class Hbase11xHelper {
 
     private static final Logger LOG = LoggerFactory.getLogger(Hbase11xHelper.class);
+
+    /** added -s by linjie 2018-1-22, for supporting Kerberized Hbase */
+    private static final String zkQuorum = "hbase.zookeeper.quorum";
+    private static final String zkZnodeParent = "zookeeper.znode.parent";
+    private static final String krb5Conf = "java.security.krb5.conf";
+    private static final String hadoopSA = "hadoop.security.authentication";
+    private static final String hbaseSA = "hbase.security.authentication";
+    private static final String hbaseRKP = "hbase.regionserver.kerberos.principal";
+    private static final String keyTabFile = "keytab.file";
+    private static final String kerberosPrincipal = "kerberos.principal";
+
+    public static void kerbersoAuthentication(org.apache.hadoop.conf.Configuration conf) {
+        /** Hbase必须配置
+         "zookeeper.znode.parent": "/hbase-secure",
+         "hbase.zookeeper.quorum": "master01.bigdata.fosun.com,master02.bigdata.fosun.com,master03.bigdata.fosun.com",
+
+         启用Kerberos时的必须配置
+         "java.security.krb5.conf": "/etc/krb5.conf",
+         "hadoop.security.authentication"： "Kerberos"，
+         "hbase.security.authentication"： "kerberos"，
+         "hbase.regionserver.kerberos.principal": "hbase/_HOST@BIGDATA.FOSUN.COM",
+         "keytab.file":"/etc/security/keytabs/hbase.headless.keytab",
+         "kerberos.principal":"hbase-fosun_bigdata@BIGDATA.FOSUN.COM"
+         */
+        /** Check Configuration */
+        // 必须有以下HBase配置
+        if (StringUtils.isBlank(conf.get(zkQuorum)) || StringUtils.isBlank(conf.get(zkZnodeParent)) ) {
+            throw DataXException.asDataXException(Hbase11xWriterErrorCode.REQUIRED_VALUE, "读hbaseConfig配置时，缺少必须参数：hbase.zookeeper.quorum, zookeeper.znode.parent");
+        }
+
+        // 启用Kerberos时，检查kerberos必须配置
+        String krb5ConfValue = conf.get(krb5Conf);
+        String hadoopSAValue = conf.get(hadoopSA);
+        String hbaseSAValue = conf.get(hbaseSA);
+        String hbaseRKPValue = conf.get(hbaseRKP);
+
+        String keyTabFileValue = conf.get(keyTabFile);
+        String kerberosPrincipalValue = conf.get(kerberosPrincipal);
+
+        if (StringUtils.isBlank(krb5ConfValue) &&
+                StringUtils.isBlank(hadoopSAValue) &&
+                StringUtils.isBlank(hbaseSAValue) &&
+                StringUtils.isBlank(hbaseRKPValue)) {
+            // kerberos disabled
+            return;
+        }
+
+        // kerberos is enabled
+        if (StringUtils.isBlank(krb5ConfValue) ||
+                StringUtils.isBlank(hadoopSAValue) ||
+                StringUtils.isBlank(hbaseSAValue) ||
+                StringUtils.isBlank(hbaseRKPValue)) {
+            throw DataXException.asDataXException(Hbase11xWriterErrorCode.REQUIRED_VALUE,
+                    String.format("启用了Kerberos，hbaseConfig配置中，缺少必须参数:[%s]，[%s]，[%s]，[%s]", krb5ConfValue, hadoopSAValue, hbaseSAValue, hbaseRKPValue));
+        }
+
+        System.setProperty(krb5Conf, krb5ConfValue);
+        UserGroupInformation.setConfiguration(conf);
+        try {
+            UserGroupInformation.loginUserFromKeytab(kerberosPrincipalValue, keyTabFileValue);
+        } catch (Exception e) {
+            throw DataXException.asDataXException(Hbase11xWriterErrorCode.KERBEROS_AUTHENIICATION, e);
+        }
+    }
+    /** added -e by linjie 2018-1-22, for supporting Kerberized Hbase */
 
     public static org.apache.hadoop.conf.Configuration getHbaseConfiguration(String hbaseConfig) {
         if (StringUtils.isBlank(hbaseConfig)) {
@@ -43,6 +109,9 @@ public class Hbase11xHelper {
     public static org.apache.hadoop.hbase.client.Connection getHbaseConnection(String hbaseConfig) {
         org.apache.hadoop.conf.Configuration hConfiguration = Hbase11xHelper.getHbaseConfiguration(hbaseConfig);
 
+        /** added by linjie 2018-1-22, for supporting Kerberized Hbase */
+        kerbersoAuthentication(hConfiguration);
+
         org.apache.hadoop.hbase.client.Connection hConnection = null;
         try {
             hConnection = ConnectionFactory.createConnection(hConfiguration);
@@ -53,7 +122,6 @@ public class Hbase11xHelper {
         }
         return hConnection;
     }
-
 
     public static Table getTable(com.alibaba.datax.common.util.Configuration configuration){
         String hbaseConfig = configuration.getString(Key.HBASE_CONFIG);
@@ -295,3 +363,4 @@ public class Hbase11xHelper {
         }
     }
 }
+

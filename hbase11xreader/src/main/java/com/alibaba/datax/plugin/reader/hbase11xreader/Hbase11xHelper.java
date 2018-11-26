@@ -12,6 +12,8 @@ import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.*;
 import org.apache.hadoop.hbase.util.Bytes;
 import org.apache.hadoop.hbase.util.Pair;
+import org.apache.hadoop.security.UserGroupInformation;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,6 +33,71 @@ public class Hbase11xHelper {
 
     private static final Logger LOG = LoggerFactory.getLogger(Hbase11xHelper.class);
 
+    /** added -s by linjie 2018-1-22, for supporting Kerberized Hbase */
+    private static final String zkQuorum = "hbase.zookeeper.quorum";
+    private static final String zkZnodeParent = "zookeeper.znode.parent";
+    private static final String krb5Conf = "java.security.krb5.conf";
+    private static final String hadoopSA = "hadoop.security.authentication";
+    private static final String hbaseSA = "hbase.security.authentication";
+    private static final String hbaseRKP = "hbase.regionserver.kerberos.principal";
+    private static final String keyTabFile = "keytab.file";
+    private static final String kerberosPrincipal = "kerberos.principal";
+
+    public static void kerbersoAuthentication(org.apache.hadoop.conf.Configuration conf) {
+        /** Hbase必须配置
+        "zookeeper.znode.parent": "/hbase-secure",
+        "hbase.zookeeper.quorum": "master01.bigdata.fosun.com,master02.bigdata.fosun.com,master03.bigdata.fosun.com",
+
+         启用Kerberos时的必须配置
+        "java.security.krb5.conf": "/etc/krb5.conf",
+        "hadoop.security.authentication"： "Kerberos"，
+        "hbase.security.authentication"： "kerberos"，
+        "hbase.regionserver.kerberos.principal": "hbase/_HOST@BIGDATA.FOSUN.COM",
+        "keytab.file":"/etc/security/keytabs/hbase.headless.keytab",
+        "kerberos.principal":"hbase-fosun_bigdata@BIGDATA.FOSUN.COM"
+         */
+        /** Check Configuration */
+        // 必须有以下HBase配置
+        if (StringUtils.isBlank(conf.get(zkQuorum)) || StringUtils.isBlank(conf.get(zkZnodeParent)) ) {
+            throw DataXException.asDataXException(Hbase11xReaderErrorCode.REQUIRED_VALUE, "读hbaseConfig配置时，缺少必须参数：hbase.zookeeper.quorum, zookeeper.znode.parent");
+        }
+
+        // 启用Kerberos时，检查kerberos必须配置
+        String krb5ConfValue = conf.get(krb5Conf);
+        String hadoopSAValue = conf.get(hadoopSA);
+        String hbaseSAValue = conf.get(hbaseSA);
+        String hbaseRKPValue = conf.get(hbaseRKP);
+
+        String keyTabFileValue = conf.get(keyTabFile);
+        String kerberosPrincipalValue = conf.get(kerberosPrincipal);
+
+        if (StringUtils.isBlank(krb5ConfValue) &&
+                StringUtils.isBlank(hadoopSAValue) &&
+                StringUtils.isBlank(hbaseSAValue) &&
+                StringUtils.isBlank(hbaseRKPValue)) {
+            // kerberos disabled
+            return;
+        }
+
+        // kerberos is enabled
+        if (StringUtils.isBlank(krb5ConfValue) ||
+                StringUtils.isBlank(hadoopSAValue) ||
+                StringUtils.isBlank(hbaseSAValue) ||
+                StringUtils.isBlank(hbaseRKPValue)) {
+            throw DataXException.asDataXException(Hbase11xReaderErrorCode.REQUIRED_VALUE,
+                    String.format("启用了Kerberos，hbaseConfig配置中，缺少必须参数:[%s]，[%s]，[%s]，[%s]", krb5ConfValue, hadoopSAValue, hbaseSAValue, hbaseRKPValue));
+        }
+
+        System.setProperty(krb5Conf, krb5ConfValue);
+        UserGroupInformation.setConfiguration(conf);
+        try {
+            UserGroupInformation.loginUserFromKeytab(kerberosPrincipalValue, keyTabFileValue);
+        } catch (Exception e) {
+            throw DataXException.asDataXException(Hbase11xReaderErrorCode.KERBEROS_AUTHENIICATION, e);
+        }
+    }
+    /** added -e by linjie 2018-1-22, for supporting Kerberized Hbase */
+
     public static org.apache.hadoop.hbase.client.Connection getHbaseConnection(String hbaseConfig) {
         if (StringUtils.isBlank(hbaseConfig)) {
             throw DataXException.asDataXException(Hbase11xReaderErrorCode.REQUIRED_VALUE, "读 Hbase 时需要配置hbaseConfig，其内容为 Hbase 连接信息，请联系 Hbase PE 获取该信息.");
@@ -46,6 +113,8 @@ public class Hbase11xHelper {
         } catch (Exception e) {
             throw DataXException.asDataXException(Hbase11xReaderErrorCode.GET_HBASE_CONNECTION_ERROR, e);
         }
+        /** added by linjie 2018-1-22, for supporting Kerberized Hbase */
+        kerbersoAuthentication(hConfiguration);
         org.apache.hadoop.hbase.client.Connection hConnection = null;
         try {
             hConnection = ConnectionFactory.createConnection(hConfiguration);
@@ -79,26 +148,26 @@ public class Hbase11xHelper {
         return hTable;
     }
 
-   public static RegionLocator getRegionLocator(com.alibaba.datax.common.util.Configuration configuration){
-       String hbaseConfig = configuration.getString(Key.HBASE_CONFIG);
-       String userTable = configuration.getString(Key.TABLE);
-       org.apache.hadoop.hbase.client.Connection hConnection = Hbase11xHelper.getHbaseConnection(hbaseConfig);
-       TableName hTableName = TableName.valueOf(userTable);
-       org.apache.hadoop.hbase.client.Admin admin = null;
-       RegionLocator regionLocator = null;
-       try {
-           admin = hConnection.getAdmin();
-           Hbase11xHelper.checkHbaseTable(admin,hTableName);
-           regionLocator = hConnection.getRegionLocator(hTableName);
-       } catch (Exception e) {
-           Hbase11xHelper.closeRegionLocator(regionLocator);
-           Hbase11xHelper.closeAdmin(admin);
-           Hbase11xHelper.closeConnection(hConnection);
-           throw DataXException.asDataXException(Hbase11xReaderErrorCode.GET_HBASE_REGINLOCTOR_ERROR, e);
-       }
-       return regionLocator;
+    public static RegionLocator getRegionLocator(com.alibaba.datax.common.util.Configuration configuration){
+        String hbaseConfig = configuration.getString(Key.HBASE_CONFIG);
+        String userTable = configuration.getString(Key.TABLE);
+        org.apache.hadoop.hbase.client.Connection hConnection = Hbase11xHelper.getHbaseConnection(hbaseConfig);
+        TableName hTableName = TableName.valueOf(userTable);
+        org.apache.hadoop.hbase.client.Admin admin = null;
+        RegionLocator regionLocator = null;
+        try {
+            admin = hConnection.getAdmin();
+            Hbase11xHelper.checkHbaseTable(admin,hTableName);
+            regionLocator = hConnection.getRegionLocator(hTableName);
+        } catch (Exception e) {
+            Hbase11xHelper.closeRegionLocator(regionLocator);
+            Hbase11xHelper.closeAdmin(admin);
+            Hbase11xHelper.closeConnection(hConnection);
+            throw DataXException.asDataXException(Hbase11xReaderErrorCode.GET_HBASE_REGINLOCTOR_ERROR, e);
+        }
+        return regionLocator;
 
-   }
+    }
 
     public static void closeConnection(Connection hConnection){
         try {
@@ -480,3 +549,4 @@ public class Hbase11xHelper {
         Validate.isTrue(isMaxVersionValid, String.format("您配置的是 %s 模式读取 hbase 中的数据，但是配置的 maxVersion 值错误. maxVersion规定：-1为读取全部版本，不能配置为0或者1（因为0或者1，我们认为用户是想用 normal 模式读取数据，而非 %s 模式读取，二者差别大），大于1则表示读取最新的对应个数的版本", mode, mode));
     }
 }
+
