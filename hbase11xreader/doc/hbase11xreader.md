@@ -398,6 +398,59 @@ ROW                                   COLUMN+CELL
 | Date     |date    | 
 | Boolean  |boolean  |  
 
+### 3.4 Kerberos保护下的HBase
+```
+{
+    "job": {
+        "setting": {
+            "speed": {
+                "channel": 1
+            }
+        },
+        "content": [
+            {
+                "reader": {
+                    "name": "hbase11xreader",
+                    "parameter": {
+                        "hbaseConfig": {
+                            "zookeeper.znode.parent": "/hbase-secure",
+                            "hbase.zookeeper.quorum": "zk01.xxx.com,zk02.xxx.com,zk03.xxx.com",
+                            "java.security.krb5.conf": "/etc/krb5.conf",
+                            "hadoop.security.authentication": "Kerberos",
+                            "hbase.security.authentication": "kerberos",
+                            "hbase.regionserver.kerberos.principal": "hbase/_HOST@BIGDATA.xxx.COM",
+                            "keytab.file":"/etc/security/keytabs/hbase.headless.keytab",
+                            "kerberos.principal":"hbase-user@BIGDATA.xxx.COM"
+                        },
+                        "table": "test",
+                        "encoding": "utf-8",
+                        "mode": "normal",
+                        "column": [
+                            {
+                                "name": "f:a",
+                                "type": "string"
+                            }
+                        ],
+                        "range": {
+                            "startRowkey": "",
+                            "endRowkey": "",
+                            "isBinaryRowkey": true
+                        }
+                    }
+                },
+                "writer": {
+                    "name": "streamwriter",
+                    "parameter": {
+                        "encoding":"UTF-8",
+                        "print":true
+                    }
+                }
+            }
+        ]
+    }
+}
+```
+
 
 
 
